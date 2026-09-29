@@ -9,7 +9,10 @@
   "nav.themeDark": "Switch to dark theme",
 
   "footer.tagline": "Reputation should name humans, not hoard points. Lit on Stellar.",
-  "footer.live": "Live on Stellar testnet",
+  "network.badge.testnet": "Testnet · test funds",
+  "network.badge.mainnet": "Mainnet",
+  "network.badge.aria": "Network: {network} — view status",
+  "network.badge.title": "View network status",
   "footer.copyright": "© 2026 alvinmunk",
   "footer.slogan": "Collect people, not points.",
   "footer.col.product": "Product",
