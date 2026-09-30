@@ -96,7 +96,7 @@ export function IdentityBar() {
       // face — the default everyone already sees.
       const published = await getMeta(p.address);
       const shown: AvatarConfig = { kind: 'face', id: defaultAvatarId(p.address) };
-      const avatar = change.avatar ?? p.avatar ?? published?.avatar ?? shown;
+      const avatar = change.avatar ??  p.avatar ?? published?.avatar ?? shown;
       const bio = change.bio ?? p.bio ?? published?.bio ?? '';
       const w = await connect();
       await setMeta(w, avatar, bio);
@@ -320,18 +320,9 @@ export function IdentityBar() {
             ))}
           </div>
           {tab === 'faces' ? (
-            <AvatarPicker
-              value={profile.avatar?.kind === 'face' ? profile.avatar.id : undefined}
-              onChange={chooseFace}
-              size={44}
-            />
+            <AvatarPicker address={profile.address} onChange={chooseFace} />
           ) : (
-            <AvatarRemix
-              seed={profile.address}
-              initial={profile.avatar?.kind === 'kit' ? profile.avatar : undefined}
-              onSave={chooseKit}
-              onCancel={() => setPicking(false)}
-            />
+            <AvatarRemix address={profile.address} onChange={chooseKit} />
           )}
         </div>
       )}

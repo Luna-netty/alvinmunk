@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import { Copy, Check, Share2, Plus, X, QrCode as QrCodeIcon } from 'lucide-react';
 import { getWallet } from '@/lib/wallet';
 import {
@@ -58,6 +58,8 @@ export function VouchCompose() {
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showQr, setShowQr] = useState(false);
+  const [noteTruncated, setNoteTruncated] = useState(false);
+  const noteId = useId();
 
   function switchMode(next: 'one' | 'many') {
     if (busy || next === mode) return;
@@ -131,6 +133,12 @@ export function VouchCompose() {
 
   function setRow(i: number, value: string) {
     setNotes((rows) => rows.map((r, j) => (j === i ? clampVouchNote(value) : r)));
+  }
+
+  function onNoteChange(value: string) {
+    const clamped = clampVouchNote(value);
+    setNoteTruncated(clamped.length < value.length);
+    setNote(clamped);
   }
 
   /** Copy `text` and flash the check on the button keyed `key`. */
@@ -212,13 +220,35 @@ export function VouchCompose() {
           />
         ) : (
           <>
+            <label htmlFor={noteId} className="mb-1 block text-sm font-medium">
+              {t('vouch.compose.noteLabel')}
+            </label>
             <Textarea
+              id={noteId}
               value={note}
-              onChange={(e) => setNote(clampVouchNote(e.target.value))}
+              onChange={(e) => onNoteChange(e.target.value)}
               rows={2}
               placeholder={t('vouch.compose.placeholder')}
-              className="mb-3"
+              aria-describedby={`${noteId}-counter`}
+              className="mb-1"
             />
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <p
+                id={`${noteId}-counter`}
+                aria-live={note.length >= VOUCH_NOTE_MAX_CHARS - 10 ? 'polite' : 'off'}
+                className="text-xs text-muted-foreground"
+              >
+                {t('vouch.compose.noteCounter', {
+                  count: String(note.length),
+                  max: String(VOUCH_NOTE_MAX_CHARS),
+                })}
+              </p>
+              {noteTruncated && (
+                <p role="status" className="text-xs text-destructive">
+                  {t('vouch.compose.noteTruncated', { max: String(VOUCH_NOTE_MAX_CHARS) })}
+                </p>
+              )}
+            </div>
             <div className="relative w-full overflow-hidden rounded-full">
               <Button variant="flow" onClick={onMint} disabled={busy} className="w-full">
                 {busy ? t('vouch.compose.buttonBusy') : t('vouch.compose.button')}
@@ -318,6 +348,7 @@ function BatchForm({
   onCopy: (card: BatchCard) => void;
   onCopyAll: () => void;
 }) {
+  const [truncatedRow, setTruncatedRow] = useState<number | null>(null);
   return (
     <>
       <p className="mb-2 text-xs text-muted-foreground">
@@ -327,26 +358,50 @@ function BatchForm({
         {notes.map((n, i) => {
           const label = t('vouch.compose.batch.cardLabel', { n: String(i + 1) });
           return (
-            <li key={i} className="flex items-center gap-2">
-              <span className="w-6 shrink-0 font-mono text-xs text-muted-foreground">{i + 1}</span>
-              <Input
-                value={n}
-                onChange={(e) => onRow(i, e.target.value)}
-                placeholder={t('vouch.compose.placeholder')}
-                aria-label={label}
-                disabled={busy}
-              />
-              {notes.length > BATCH_MIN_ROWS && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => onRemove(i)}
+            <li key={i} className="flex flex-col gap-1">
+              <div className="flex items-center gap-2">
+                <span className="w-6 shrink-0 font-mono text-xs text-muted-foreground">{i + 1}</span>
+                <Input
+                  value={n}
+                  onChange={(e) => {
+                    const clamped = clampVouchNote(e.target.value);
+                    setTruncatedRow(clamped.length < e.target.value.length ? i : null);
+                    onRow(i, e.target.value);
+                  }}
+                  placeholder={t('vouch.compose.placeholder')}
+                  aria-label={label}
+                  aria-describedby={`batch-row-${i}-counter`}
                   disabled={busy}
-                  aria-label={t('vouch.compose.batch.remove', { n: String(i + 1) })}
+                />
+                {notes.length > BATCH_MIN_ROWS && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onRemove(i)}
+                    disabled={busy}
+                    aria-label={t('vouch.compose.batch.remove', { n: String(i + 1) })}
+                  >
+                    <X className="size-4" />
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 pl-8">
+                <p
+                  id={`batch-row-${i}-counter`}
+                  aria-live={n.length >= VOUCH_NOTE_MAX_CHARS - 10 ? 'polite' : 'off'}
+                  className="text-xs text-muted-foreground"
                 >
-                  <X className="size-4" />
-                </Button>
-              )}
+                  {t('vouch.compose.noteCounter', {
+                    count: String(n.length),
+                    max: String(VOUCH_NOTE_MAX_CHARS),
+                  })}
+                </p>
+                {truncatedRow === i && (
+                  <p role="status" className="text-xs text-destructive">
+                    {t('vouch.compose.noteTruncated', { max: String(VOUCH_NOTE_MAX_CHARS) })}
+                  </p>
+                )}
+              </div>
             </li>
           );
         })}
