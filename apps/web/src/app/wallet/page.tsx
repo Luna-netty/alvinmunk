@@ -8,15 +8,13 @@ import { sendXlm, type PaymentResult } from '@/lib/payments';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { HandleTransfer } from '@/components/HandleTransfer';
 import { isStellarAddress, shortAddr } from '@alvinmunk/shared';
 
 /**
- * Level 1 + 2 multi-wallet demo: connect via the Stellar Wallets Kit picker (Freighter,
- * xBull, Albedo, Rabet, LOBSTR, Hana), show the balance, and send a testnet XLM payment
- * with pending/success/failure + tx-hash feedback. Maps 1:1 to the belt checklist. Also
- * where a user outgrowing the in-app key moves its @handle to the connected wallet.
+ * Connect a Stellar wallet, show the balance, and send a testnet XLM payment with
+ * pending/success/failure + tx-hash feedback. Also where a user outgrowing the in-app
+ * key moves its @handle to the connected wallet.
  */
 export default function WalletPage() {
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -27,6 +25,8 @@ export default function WalletPage() {
   const [busy, setBusy] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [addrTouched, setAddrTouched] = useState(false);
+  const [amountTouched, setAmountTouched] = useState(false);
 
   const validAddr = isStellarAddress(to.trim(), { allowContract: false });
   const validAmount = Number(amount) > 0;
@@ -67,24 +67,21 @@ export default function WalletPage() {
 
   return (
     <div className="container max-w-md py-12">
-      <div className="mb-1 flex items-center gap-2">
-        <h1 className="text-2xl font-semibold">Classic wallet</h1>
-        <Badge variant="outline">Level 1</Badge>
-      </div>
+      <h1 className="mb-1 text-2xl font-semibold">Wallet</h1>
       <p className="mb-8 text-sm text-muted-foreground">
-        Freighter connect, balance, and a testnet XLM payment.
+        Connect a wallet, check your balance, and send a testnet XLM payment.
       </p>
 
       {!wallet ? (
         <Button size="lg" onClick={connect} disabled={connecting}>
-          {connecting ? 'Connecting…' : 'Connect a Wallet'}
+          {connecting ? 'Connecting…' : 'Connect a wallet'}
         </Button>
       ) : (
         <div className="flex flex-col gap-4">
           <Card>
             <CardContent className="flex items-center justify-between p-5">
               <div>
-                <p className="text-xs text-muted-foreground">connected</p>
+                <p className="text-xs text-muted-foreground">Connected</p>
                 <p className="font-mono text-sm">{shortAddr(wallet.address)}</p>
                 <p className="mt-2 text-sm">
                   Balance:{' '}
@@ -105,18 +102,32 @@ export default function WalletPage() {
               <Input
                 value={to}
                 onChange={(e) => setTo(e.target.value)}
+                onBlur={() => setAddrTouched(true)}
                 placeholder="destination address (G…)"
                 className="font-mono text-xs"
               />
+              {addrTouched && !validAddr && (
+                <p className="text-xs text-destructive">Enter a G… address</p>
+              )}
               <Input
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
+                onBlur={() => setAmountTouched(true)}
                 inputMode="decimal"
                 placeholder="amount"
               />
+              {amountTouched && !validAmount && (
+                <p className="text-xs text-destructive">Amount must be greater than 0</p>
+              )}
               <Button onClick={pay} disabled={busy || !validAddr || !validAmount}>
                 {busy ? 'Sending…' : 'Send'}
               </Button>
+
+              {error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              )}
 
               {result && (
                 <div
@@ -151,12 +162,10 @@ export default function WalletPage() {
           <HandleTransfer wallet={wallet} />
         </div>
       )}
-
-      {error && <p className="mt-4 text-sm text-destructive">{error}</p>}
     </div>
   );
 }
 
 function msg(e: unknown): string {
-  return e instanceof Error ? e.message : 'something went wrong';
+  return e instanceof Error ? e.message : 'Something went wrong';
 }
