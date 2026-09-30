@@ -9,14 +9,18 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { HandleTransfer } from '@/components/HandleTransfer';
+import { useTranslations, type TFn } from '@/lib/i18n';
 import { isStellarAddress, shortAddr } from '@alvinmunk/shared';
 
 /**
  * Connect a Stellar wallet, show the balance, and send a testnet XLM payment with
  * pending/success/failure + tx-hash feedback. Also where a user outgrowing the in-app
- * key moves its @handle to the connected wallet.
+ * key moves its @handle to the connected wallet. Errors render next to the button that
+ * caused them (Connect, or Send), and an invalid field explains the disabled Send once
+ * it has been left.
  */
 export default function WalletPage() {
+  const t = useTranslations();
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [balance, setBalance] = useState<string | null>(null);
   const [to, setTo] = useState('');
@@ -30,6 +34,11 @@ export default function WalletPage() {
 
   const validAddr = isStellarAddress(to.trim(), { allowContract: false });
   const validAmount = Number(amount) > 0;
+  const showAddrError = addrTouched && !validAddr;
+  const showAmountError = amountTouched && !validAmount;
+  const sendHints = [showAddrError && 'wallet-to-error', showAmountError && 'wallet-amount-error']
+    .filter(Boolean)
+    .join(' ');
 
   async function connect() {
     setError(null);
@@ -39,7 +48,7 @@ export default function WalletPage() {
       setWallet(w);
       setBalance(await getXlmBalance(w.address).catch(() => '0'));
     } catch (e) {
-      setError(msg(e));
+      setError(msg(e, t));
     } finally {
       setConnecting(false);
     }
@@ -59,7 +68,7 @@ export default function WalletPage() {
       setResult(r);
       await refresh();
     } catch (e) {
-      setError(msg(e));
+      setError(msg(e, t));
     } finally {
       setBusy(false);
     }
@@ -67,60 +76,86 @@ export default function WalletPage() {
 
   return (
     <div className="container max-w-md py-12">
-      <h1 className="mb-1 text-2xl font-semibold">Wallet</h1>
-      <p className="mb-8 text-sm text-muted-foreground">
-        Connect a wallet, check your balance, and send a testnet XLM payment.
-      </p>
+      <h1 className="mb-1 text-2xl font-semibold">{t('walletPage.title')}</h1>
+      <p className="mb-8 text-sm text-muted-foreground">{t('walletPage.subtitle')}</p>
 
       {!wallet ? (
-        <Button size="lg" onClick={connect} disabled={connecting}>
-          {connecting ? 'Connecting…' : 'Connect a wallet'}
-        </Button>
+        <div className="flex flex-col items-start gap-3">
+          <Button size="lg" onClick={connect} disabled={connecting}>
+            {connecting ? t('walletPage.connecting') : t('walletPage.connect')}
+          </Button>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
       ) : (
         <div className="flex flex-col gap-4">
           <Card>
             <CardContent className="flex items-center justify-between p-5">
               <div>
-                <p className="text-xs text-muted-foreground">Connected</p>
+                <p className="text-xs text-muted-foreground">{t('walletPage.connected')}</p>
                 <p className="font-mono text-sm">{shortAddr(wallet.address)}</p>
                 <p className="mt-2 text-sm">
-                  Balance:{' '}
+                  {t('walletPage.balance')}{' '}
                   <span className="font-semibold text-primary">
                     {balance ? `${Number(balance).toFixed(2)} XLM` : '…'}
                   </span>
                 </p>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => setWallet(null)}>
-                Disconnect
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // A payment error belongs to this wallet; don't carry it over to Connect.
+                  setWallet(null);
+                  setError(null);
+                  setResult(null);
+                }}
+              >
+                {t('wallet.disconnect')}
               </Button>
             </CardContent>
           </Card>
 
           <Card>
             <CardContent className="flex flex-col gap-3 p-5">
-              <h2 className="text-sm font-semibold">Send XLM (testnet)</h2>
+              <h2 className="text-sm font-semibold">{t('walletPage.sendTitle')}</h2>
               <Input
                 value={to}
                 onChange={(e) => setTo(e.target.value)}
                 onBlur={() => setAddrTouched(true)}
-                placeholder="destination address (G…)"
+                placeholder={t('walletPage.toPlaceholder')}
+                aria-invalid={showAddrError || undefined}
+                aria-describedby={showAddrError ? 'wallet-to-error' : undefined}
                 className="font-mono text-xs"
               />
-              {addrTouched && !validAddr && (
-                <p className="text-xs text-destructive">Enter a G… address</p>
+              {showAddrError && (
+                <p id="wallet-to-error" className="text-xs text-destructive">
+                  {t('walletPage.invalidTo')}
+                </p>
               )}
               <Input
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
                 onBlur={() => setAmountTouched(true)}
                 inputMode="decimal"
-                placeholder="amount"
+                placeholder={t('walletPage.amountPlaceholder')}
+                aria-invalid={showAmountError || undefined}
+                aria-describedby={showAmountError ? 'wallet-amount-error' : undefined}
               />
-              {amountTouched && !validAmount && (
-                <p className="text-xs text-destructive">Amount must be greater than 0</p>
+              {showAmountError && (
+                <p id="wallet-amount-error" className="text-xs text-destructive">
+                  {t('walletPage.invalidAmount')}
+                </p>
               )}
-              <Button onClick={pay} disabled={busy || !validAddr || !validAmount}>
-                {busy ? 'Sending…' : 'Send'}
+              <Button
+                onClick={pay}
+                disabled={busy || !validAddr || !validAmount}
+                aria-describedby={sendHints || undefined}
+              >
+                {busy ? t('walletPage.sending') : t('walletPage.send')}
               </Button>
 
               {error && (
@@ -141,10 +176,10 @@ export default function WalletPage() {
                 >
                   <p className="font-semibold">
                     {result.status === 'SUCCESS'
-                      ? '✓ Payment confirmed'
+                      ? t('walletPage.confirmed')
                       : result.status === 'FAILED'
-                        ? '✗ Payment failed'
-                        : '… Submitted (pending)'}
+                        ? t('walletPage.failed')
+                        : t('walletPage.pending')}
                   </p>
                   <a
                     href={txExplorerUrl(result.hash)}
@@ -166,6 +201,6 @@ export default function WalletPage() {
   );
 }
 
-function msg(e: unknown): string {
-  return e instanceof Error ? e.message : 'Something went wrong';
+function msg(e: unknown, t: TFn): string {
+  return e instanceof Error ? e.message : t('walletPage.error');
 }
