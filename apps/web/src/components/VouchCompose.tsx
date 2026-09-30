@@ -10,6 +10,7 @@ import {
   mintVouches,
   VOUCH_BATCH_MAX,
   VOUCH_NOTE_MAX_CHARS,
+  vouchNoteChars,
 } from '@/lib/reputation';
 import { addMyVouch, subscribeToVouchPush } from '@/lib/myvouches';
 import { Frame } from '@/components/fx/frame';
@@ -40,6 +41,12 @@ function buildVouchErrors(t: TFn): Record<number, string> {
 /** Rows the "several people" form opens with — fewer is the one-person form. */
 const BATCH_MIN_ROWS = 2;
 
+/** From this many characters left, the counter speaks up (aria-live) as you type. */
+const NOTE_NEAR_LIMIT = 10;
+
+/** True when the note cap cut something off `raw` (a long paste, or typing past the cap). */
+const wasCut = (raw: string) => clampVouchNote(raw) !== raw;
+
 /** One card of a batch, as the result list shows it. */
 interface BatchCard {
   id: number;
@@ -58,7 +65,7 @@ export function VouchCompose() {
   const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showQr, setShowQr] = useState(false);
-  const [noteTruncated, setNoteTruncated] = useState(false);
+  const [noteCut, setNoteCut] = useState(false);
   const noteId = useId();
 
   function switchMode(next: 'one' | 'many') {
@@ -133,12 +140,6 @@ export function VouchCompose() {
 
   function setRow(i: number, value: string) {
     setNotes((rows) => rows.map((r, j) => (j === i ? clampVouchNote(value) : r)));
-  }
-
-  function onNoteChange(value: string) {
-    const clamped = clampVouchNote(value);
-    setNoteTruncated(clamped.length < value.length);
-    setNote(clamped);
   }
 
   /** Copy `text` and flash the check on the button keyed `key`. */
@@ -221,34 +222,21 @@ export function VouchCompose() {
         ) : (
           <>
             <label htmlFor={noteId} className="mb-1 block text-sm font-medium">
-              {t('vouch.compose.noteLabel')}
+              {t('vouch.compose.note.label')}
             </label>
             <Textarea
               id={noteId}
               value={note}
-              onChange={(e) => onNoteChange(e.target.value)}
+              onChange={(e) => {
+                setNoteCut(wasCut(e.target.value));
+                setNote(clampVouchNote(e.target.value));
+              }}
               rows={2}
               placeholder={t('vouch.compose.placeholder')}
-              aria-describedby={`${noteId}-counter`}
+              aria-describedby={`${noteId}-count`}
               className="mb-1"
             />
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <p
-                id={`${noteId}-counter`}
-                aria-live={note.length >= VOUCH_NOTE_MAX_CHARS - 10 ? 'polite' : 'off'}
-                className="text-xs text-muted-foreground"
-              >
-                {t('vouch.compose.noteCounter', {
-                  count: String(note.length),
-                  max: String(VOUCH_NOTE_MAX_CHARS),
-                })}
-              </p>
-              {noteTruncated && (
-                <p role="status" className="text-xs text-destructive">
-                  {t('vouch.compose.noteTruncated', { max: String(VOUCH_NOTE_MAX_CHARS) })}
-                </p>
-              )}
-            </div>
+            <NoteMeta id={noteId} t={t} value={note} cut={noteCut} className="mb-3" />
             <div className="relative w-full overflow-hidden rounded-full">
               <Button variant="flow" onClick={onMint} disabled={busy} className="w-full">
                 {busy ? t('vouch.compose.buttonBusy') : t('vouch.compose.button')}
@@ -322,6 +310,47 @@ export function VouchCompose() {
   );
 }
 
+/**
+ * Under a note field: the live `n/60` counter (announced politely once the note nears the
+ * cap, silent before that so every keystroke isn't read out), and a status line that says
+ * when the cap cut text off. The status element is always mounted so its message is
+ * announced when it appears.
+ */
+function NoteMeta({
+  id,
+  t,
+  value,
+  cut,
+  className,
+}: {
+  id: string;
+  t: TFn;
+  value: string;
+  cut: boolean;
+  className?: string;
+}) {
+  const count = vouchNoteChars(value);
+  const near = count >= VOUCH_NOTE_MAX_CHARS - NOTE_NEAR_LIMIT;
+  const vars = { count: String(count), max: String(VOUCH_NOTE_MAX_CHARS) };
+  return (
+    <div className={`flex items-center justify-between gap-2 text-xs ${className ?? ''}`}>
+      <p role="status" className="text-destructive">
+        {cut ? t('vouch.compose.note.truncated', { max: vars.max }) : ''}
+      </p>
+      <p
+        id={`${id}-count`}
+        aria-live={near ? 'polite' : 'off'}
+        className={`shrink-0 font-mono ${near ? 'text-foreground' : 'text-muted-foreground'}`}
+      >
+        <span aria-hidden="true">
+          {count}/{VOUCH_NOTE_MAX_CHARS}
+        </span>
+        <span className="sr-only">{t('vouch.compose.note.count', vars)}</span>
+      </p>
+    </div>
+  );
+}
+
 /** The cohort form: one note per person, minted together, then every link listed. */
 function BatchForm({
   t,
@@ -348,7 +377,9 @@ function BatchForm({
   onCopy: (card: BatchCard) => void;
   onCopyAll: () => void;
 }) {
-  const [truncatedRow, setTruncatedRow] = useState<number | null>(null);
+  const rowId = useId();
+  /** The row whose last edit the cap cut, if any. */
+  const [cutRow, setCutRow] = useState<number | null>(null);
   return (
     <>
       <p className="mb-2 text-xs text-muted-foreground">
@@ -357,6 +388,7 @@ function BatchForm({
       <ol className="mb-3 flex flex-col gap-2">
         {notes.map((n, i) => {
           const label = t('vouch.compose.batch.cardLabel', { n: String(i + 1) });
+          const id = `${rowId}-${i}`;
           return (
             <li key={i} className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
@@ -364,20 +396,22 @@ function BatchForm({
                 <Input
                   value={n}
                   onChange={(e) => {
-                    const clamped = clampVouchNote(e.target.value);
-                    setTruncatedRow(clamped.length < e.target.value.length ? i : null);
+                    setCutRow(wasCut(e.target.value) ? i : null);
                     onRow(i, e.target.value);
                   }}
                   placeholder={t('vouch.compose.placeholder')}
                   aria-label={label}
-                  aria-describedby={`batch-row-${i}-counter`}
+                  aria-describedby={`${id}-count`}
                   disabled={busy}
                 />
                 {notes.length > BATCH_MIN_ROWS && (
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => onRemove(i)}
+                    onClick={() => {
+                      setCutRow(null); // rows below shift up; the notice would land on another
+                      onRemove(i);
+                    }}
                     disabled={busy}
                     aria-label={t('vouch.compose.batch.remove', { n: String(i + 1) })}
                   >
@@ -385,23 +419,7 @@ function BatchForm({
                   </Button>
                 )}
               </div>
-              <div className="flex items-center justify-between gap-2 pl-8">
-                <p
-                  id={`batch-row-${i}-counter`}
-                  aria-live={n.length >= VOUCH_NOTE_MAX_CHARS - 10 ? 'polite' : 'off'}
-                  className="text-xs text-muted-foreground"
-                >
-                  {t('vouch.compose.noteCounter', {
-                    count: String(n.length),
-                    max: String(VOUCH_NOTE_MAX_CHARS),
-                  })}
-                </p>
-                {truncatedRow === i && (
-                  <p role="status" className="text-xs text-destructive">
-                    {t('vouch.compose.noteTruncated', { max: String(VOUCH_NOTE_MAX_CHARS) })}
-                  </p>
-                )}
-              </div>
+              <NoteMeta id={id} t={t} value={n} cut={cutRow === i} className="pl-8" />
             </li>
           );
         })}

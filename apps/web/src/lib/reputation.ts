@@ -25,7 +25,7 @@ import { SCHEMA, type Attestation } from '@alvinmunk/shared';
 export const VOUCH_TTL_SECS = 604_800; // 7 days
 
 /** The contract's note cap (`MAX_NOTE_BYTES`): `mint_vouch_signed` reverts with `NoteTooLong`
- *  (#12) past it. It counts UTF-8 BYTES, so `s` costs 2 and most emoji 4. */
+ *  (#12) past it. It counts UTF-8 BYTES, so `ş` costs 2 and most emoji 4. */
 export const VOUCH_NOTE_MAX_BYTES = 240;
 /** The compose limit in characters (code points). UTF-8 spends at most 4 bytes on one,
  *  so a note within it always fits `VOUCH_NOTE_MAX_BYTES` — 60 Turkish letters or 60
@@ -43,6 +43,12 @@ export function vouchNoteBytes(s: string): number {
   return utf8.encode(s).length;
 }
 
+/** Characters (code points) in `s` — what `VOUCH_NOTE_MAX_CHARS` counts, and the composer's
+ *  `n/60`. Not `s.length`: an emoji is two UTF-16 units but one character here. */
+export function vouchNoteChars(s: string): number {
+  return [...s].length;
+}
+
 /** Cut `input` to a note `mint_vouch_signed` accepts: at most `VOUCH_NOTE_MAX_CHARS` characters
  *  and `VOUCH_NOTE_MAX_BYTES` bytes, never half a character. The character cap binds
  *  first; the byte check is the contract's own rule, kept so the two can never drift. */
@@ -56,17 +62,6 @@ export function clampVouchNote(input: string): string {
     out += ch;
   }
   return out;
-}
-
-/** How many characters a note uses — the counter the composer shows as `n/60`. */
-export function vouchNoteChars(s: string): number {
-  return [...s].length;
-}
-
-/** True when `clampVouchNote` would drop anything from `input` — the composer uses this to
- *  show the "truncated" notice after a over-long paste. */
-export function vouchNoteTruncated(input: string): boolean {
-  return clampVouchNote(input) !== input;
 }
 
 /** A half-card as read from chain, and the get_profile aggregate — the SDK's shapes. */
@@ -284,35 +279,98 @@ const pendingVouches = new Map<string, Promise<VouchView | null>>();
 const settledVouches = new Map<string, { view: VouchView | null; at: number }>();
 const vouchKey = (vouchId: number, net?: ReadNetwork | null) => `${net?.network ?? ''}|${vouchId}`;
 const vouchReadGate = concurrencyLimit(VOUCH_READ_CONCURRENCY);
+/** Bumped by `forgetVouch`, so a read that started before it can't store a stale view. */
+let vouchEpoch = 0;
 
-/** Forget a cached read of a card — after a claim, so the next mount sees the claim. */
-export function forgetVouch(vouchId: number, net?: ReadNetwork | null): void {
-  const key = vouchKey(vouchId, net);
-  pendingVouches.delete(key);
-  settledVouches.delete(key);
-}
-
-/** `get_vouch(id)` — a half-card by id, or `null` when it does not exist. Reuses a recent
- *  read for `VOUCH_READ_TTL_MS`, and one in-flight simulation at a time per key. */
+/** Read a half-card by id (no wallet needed — used by the logged-out claim funnel).
+ *  Every dashboard card scans the same stored vouches, so each id is read once per load:
+ *  concurrent callers share one read, a settled one is reused for `VOUCH_READ_TTL_MS` —
+ *  and for the whole session once claimed, as a claimed card never changes again (a slashed
+ *  one still can: it stays claimable). Failed reads are not kept. At most
+ *  `VOUCH_READ_CONCURRENCY` reads hit the RPC at once. */
 export function getVouch(vouchId: number, net?: ReadNetwork | null): Promise<VouchView | null> {
   const key = vouchKey(vouchId, net);
-  const settled = settledVouches.get(key);
-  if (settled && Date.now() - settled.at < VOUCH_READ_TTL_MS) return Promise.resolve(settled.view);
-  const inFlight = pendingVouches.get(key);
-  if (inFlight) return inFlight;
-  const p = vouchReadGate(() =>
-    readContract<VouchView | null>(
-      net ? net.contracts.reputation : repId(),
-      'get_vouch',
-      [args.u64(vouchId)],
-      net,
-    ),
-  )
-    .then((view) => {
-      settledVouches.set(key, { view, at: Date.now() });
-      return view;
-    })
-    .finally(() => pendingVouches.delete(key));
-  pendingVouches.set(key, p);
-  return p;
+  const hit = settledVouches.get(key);
+  if (hit && (hit.view?.claimed || Date.now() - hit.at < VOUCH_READ_TTL_MS)) {
+    return Promise.resolve(hit.view);
+  }
+  return shareInFlight(pendingVouches, key, async () => {
+    const epoch = vouchEpoch;
+    const view = await vouchReadGate(() => (net?.client ?? readClient()).getVouch(vouchId));
+    if (epoch === vouchEpoch) settledVouches.set(key, { view, at: Date.now() });
+    return view;
+  });
+}
+
+/** Drop what `getVouch` remembers about `vouchId` (every id when omitted), so the next read
+ *  goes to the chain — after this tab changes the card, e.g. claims it. */
+export function forgetVouch(vouchId?: number): void {
+  vouchEpoch++;
+  if (vouchId === undefined) settledVouches.clear();
+  else settledVouches.delete(vouchKey(vouchId)); // this tab only writes the deployment's
+}
+
+/** A 2nd-order voucher bonus queued on a claimer — mirror of the contract's PendingBonus. */
+export interface PendingBonusView {
+  voucher: string;
+  /** Social XP, paid to `voucher` on the claimer's first verified action */
+  amount: number;
+}
+
+/** `get_pending(claimer)` — the voucher bonuses waiting on `claimer`'s first verified
+ *  (Earned) action, oldest first; empty once they verify. Rejects when the read fails —
+ *  including a deployed contract that predates the view — so "unknown" never reads as
+ *  "nothing owed". */
+export async function getPending(claimer: string): Promise<PendingBonusView[]> {
+  const list = await readPublic<Array<{ voucher: string; amount: bigint }> | undefined>(
+    repId(),
+    'get_pending',
+    [args.addr(claimer)],
+  );
+  return (list ?? []).map((p) => ({ voucher: String(p.voucher), amount: Number(p.amount) }));
+}
+
+/** Wallet-free profile aggregator — social + earned for ANY address, from the shared
+ *  `getProfile` read (which covers a contract that predates get_profile). Never rejects:
+ *  an unreadable profile reads as zero. */
+export async function getScores(
+  address: string,
+  net?: ReadNetwork | null,
+): Promise<{ social: number; earned: number }> {
+  try {
+    const p = await getProfile(address, net);
+    return { social: p.social, earned: p.earned };
+  } catch {
+    return { social: 0, earned: 0 };
+  }
+}
+
+/** `get_score(addr)` — Social XP (leaderboard, non-cashable). */
+export async function getSocialScore(addr: string, source: string): Promise<number> {
+  const v = await readContract<bigint>(repId(), 'get_score', [args.addr(addr)], source);
+  return Number(v ?? 0);
+}
+
+/** `get_earned(addr)` — Earned XP (the only USDC-eligible track). */
+export async function getEarnedScore(addr: string, source: string): Promise<number> {
+  const v = await readContract<bigint>(repId(), 'get_earned', [args.addr(addr)], source);
+  return Number(v ?? 0);
+}
+
+/**
+ * `get_attestation(addr, SCHEMA.QUEST)` on the reputation contract — the quest record every
+ * award rewrites: `value` is the running XP total across all verified quests and `timestamp`
+ * the ledger time of the latest one (there is no on-chain count). `null` means no quest yet;
+ * a failed read throws instead of looking like "no quests".
+ */
+export async function getQuestAttestation(addr: string, net?: ReadNetwork | null): Promise<Attestation | null> {
+  const a = await readPublic<{ issuer: string; value: bigint | number; timestamp: bigint | number; revoked: boolean }>(
+    net ? net.contracts.reputation : repId(),
+    'get_attestation',
+    [args.addr(addr), args.u32(SCHEMA.QUEST)],
+    net,
+  );
+  if (!a) return null;
+  // i128 / u64 decode to bigint; normalise to the shared shape (timestamp in unix seconds).
+  return { issuer: a.issuer, value: BigInt(a.value), timestamp: Number(a.timestamp), revoked: a.revoked };
 }
